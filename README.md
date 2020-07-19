@@ -1,2 +1,2 @@
-# TF2-InteractiveMvM
- An interactive gamemode for the Team Fortress 2 gamemode Mann vs Machine.
+# TF2-UndeadZombies
+Undead Zombies is a gamemode which pits players vs AI and player controlled zombies for Team Fortress 2.
