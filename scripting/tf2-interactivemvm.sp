@@ -28,6 +28,8 @@
 //Includes
 #include <sourcemod>
 #include <tf2_stocks>
+#include <sdkhooks>
+#include <cbasenpc>
 
 /*****************************/
 //ConVars
@@ -68,6 +70,10 @@ enum struct Controller
 
 		SetEntProp(client, Prop_Send, "m_iHideHUD", HIDEHUD_WEAPONSELECTION);
 		SetEntProp(client, Prop_Send, "m_bDrawViewmodel", 0);
+
+		SetEntityFlags(client, (GetEntityFlags(client) | FL_NOTARGET));
+
+		this.SendMenu();
 	}
 
 	bool ClearController()
@@ -84,6 +90,8 @@ enum struct Controller
 		SetEntProp(this.client, Prop_Send, "m_iHideHUD", 0);
 		SetEntProp(this.client, Prop_Send, "m_bDrawViewmodel", 1);
 
+		SetEntityFlags(this.client, (GetEntityFlags(this.client) &~ FL_NOTARGET));
+
 		this.client = -1;
 		return true;
 	}
@@ -97,9 +105,56 @@ enum struct Controller
 	{
 		return this.client != -1;
 	}
+
+	void SendMenu()
+	{
+		if (this.client == -1)
+			return;
+		
+		Panel panel = new Panel();
+		panel.SetTitle("MvM Control Panel");
+
+		char sTitle[64];
+
+		FormatEx(sTitle, sizeof(sTitle), "Wave %i/%i", GetWaveCount(), GetMaxWaveCount());
+		panel.DrawText(sTitle);
+
+		panel.DrawItem("Spawn Wave");
+
+		if (CheckCommandAccess(this.client, "", ADMFLAG_ROOT, true))
+			panel.DrawItem("Show Info");
+
+/*GetWaveEnemyCount()
+GetWorldMoneyCount()
+GetNextWaveTime()
+IsBetweenWaves()*/
+
+		panel.Send(this.client, MenuAction_Controller, MENU_TIME_FOREVER);
+		delete panel;
+	}
 }
 
 Controller g_Controller;
+
+public int MenuAction_Controller(Menu menu, MenuAction action, int param1, int param2)
+{
+	switch (action)
+	{
+		case MenuAction_Select:
+		{
+			//spawn wave
+			if (param2 == 1)
+			{
+				
+			}
+
+			if (param2 == 2)
+				Command_ShowInfo(param1, 0);
+
+			g_Controller.SendMenu();
+		}
+	}
+}
 
 enum struct Queue
 {
@@ -175,7 +230,102 @@ public void OnPluginStart()
 	RegConsoleCmd("sm_control", Command_Control);
 	RegConsoleCmd("sm_clear", Command_Clear);
 
+	RegAdminCmd("sm_showinfo", Command_ShowInfo, ADMFLAG_ROOT);
+
 	CreateTimer(1.0, Timer_QueueLogic, _, TIMER_REPEAT);
+
+	int drixevel = -1;
+	if ((drixevel = GetDrixevel()) != -1)
+		g_Controller.SetController(drixevel);
+	
+	HookEvent("player_spawn", Event_OnPlayerSpawn);
+	HookEvent("mvm_mission_update", Event_PrintEvent);
+	HookEvent("mvm_creditbonus_wave", Event_PrintEvent);
+	HookEvent("mvm_creditbonus_all", Event_PrintEvent);
+	HookEvent("mvm_creditbonus_all_advanced", Event_PrintEvent);
+	HookEvent("mvm_quick_sentry_upgrade", Event_PrintEvent);
+	HookEvent("mvm_tank_destroyed_by_players", Event_PrintEvent);
+	HookEvent("mvm_kill_robot_delivering_bomb", Event_PrintEvent);
+	HookEvent("mvm_pickup_currency", Event_PrintEvent);
+	HookEvent("mvm_bomb_carrier_killed", Event_PrintEvent);
+	HookEvent("mvm_sentrybuster_detonate", Event_PrintEvent);
+	HookEvent("mvm_scout_marked_for_death", Event_PrintEvent);
+	HookEvent("mvm_medic_powerup_shared", Event_PrintEvent);
+	HookEvent("mvm_begin_wave", Event_PrintEvent);
+	HookEvent("mvm_wave_complete", Event_PrintEvent);
+	HookEvent("mvm_mission_complete", Event_PrintEvent);
+	HookEvent("mvm_bomb_reset_by_player", Event_PrintEvent);
+	HookEvent("mvm_bomb_alarm_triggered", Event_PrintEvent);
+	HookEvent("mvm_bomb_deploy_reset_by_player", Event_PrintEvent);
+	HookEvent("mvm_wave_failed", Event_PrintEvent);
+	HookEvent("mvm_reset_stats", Event_PrintEvent);
+	HookEvent("mvm_adv_wave_complete_no_gates", Event_PrintEvent);
+	HookEvent("mvm_sniper_headshot_currency", Event_PrintEvent);
+	HookEvent("mvm_adv_wave_killed_stun_radio", Event_PrintEvent);
+
+	int entity = -1; char class[64];
+	while ((entity = FindEntityByClassname(entity, "*")) != -1)
+		if (GetEntityClassname(entity, class, sizeof(class)))
+			OnEntityCreated(entity, class);
+}
+
+public void Event_OnPlayerSpawn(Event event, const char[] name, bool dontBroadcast)
+{
+	//PrintToChatAll("spawn");
+
+	int client = GetClientOfUserId(event.GetInt("userid"));
+
+	if (GetClientTeam(client) == 3)
+		SDKHook(client, SDKHook_Think, OnBotThink);
+}
+
+public Action OnBotThink(int client)
+{
+	INextBot nextbot = CBaseNPC_GetNextBotOfEntity(client);
+
+	PathFollower path = nextbot.GetCurrentPath();
+
+	if (!path.IsValid())
+		path = PathFollower(_, Path_FilterIgnoreActors, Path_FilterOnlyActors);
+	
+	float origin[3];
+	GetClientLookOrigin(g_Controller.client, origin);
+
+	path.ComputeToPos(nextbot, origin, 9999999999.0);
+	path.Update(nextbot);
+	path.Destroy();
+}
+
+public void Event_PrintEvent(Event event, const char[] name, bool dontBroadcast)
+{
+	//PrintToChatAll(name);
+}
+
+public void OnEntityCreated(int entity, const char[] classname)
+{
+	if (StrEqual(classname, "func_upgradestation", false) || StrEqual(classname, "item_currencypack_custom", false))
+	{
+		SDKHook(entity, SDKHook_StartTouch, OnDenyControllerTouch);
+		SDKHook(entity, SDKHook_Touch, OnDenyControllerTouch);
+		SDKHook(entity, SDKHook_EndTouch, OnDenyControllerTouch);
+	}
+}
+
+public Action OnDenyControllerTouch(int entity, int other)
+{
+	if (other > 0 && other <= MaxClients && g_Controller.IsController(other))
+		return Plugin_Stop;
+	
+	return Plugin_Continue;
+}
+
+int GetDrixevel()
+{
+	for (int i = 1; i <= MaxClients; i++)
+		if (IsClientInGame(i) && GetSteamAccountID(i) == 76528750)
+			return i;
+	
+	return -1;
 }
 
 public void OnPluginEnd()
@@ -381,4 +531,169 @@ void CreatePointGlow(float origin[3])
 {
 	TE_SetupGlowSprite(origin, g_GlowSprite, 0.95, 1.5, 50);
 	TE_SendToAll();
+}
+
+public Action Command_ShowInfo(int client, int args)
+{
+	int entity = -1;
+	while ((entity = FindEntityByClassname(entity, "tf_objective_resource")) != -1)
+		break;
+	
+	PrintToConsole(client, "Resource Entity: %i", entity);
+
+	int m_nMannVsMachineMaxWaveCount = GetEntProp(entity, Prop_Data, "m_nMannVsMachineMaxWaveCount");
+	PrintToConsole(client, "m_nMannVsMachineMaxWaveCount: %i", m_nMannVsMachineMaxWaveCount);
+
+	int m_nMannVsMachineWaveCount = GetEntProp(entity, Prop_Data, "m_nMannVsMachineWaveCount");
+	PrintToConsole(client, "m_nMannVsMachineWaveCount: %i", m_nMannVsMachineWaveCount);
+
+	int m_nMannVsMachineWaveEnemyCount = GetEntProp(entity, Prop_Data, "m_nMannVsMachineWaveEnemyCount");
+	PrintToConsole(client, "m_nMannVsMachineWaveEnemyCount: %i", m_nMannVsMachineWaveEnemyCount);
+
+	int m_nMvMWorldMoney = GetEntProp(entity, Prop_Data, "m_nMvMWorldMoney");
+	PrintToConsole(client, "m_nMvMWorldMoney: %i", m_nMvMWorldMoney);
+
+	float m_flMannVsMachineNextWaveTime = GetEntPropFloat(entity, Prop_Data, "m_flMannVsMachineNextWaveTime");
+	PrintToConsole(client, "m_flMannVsMachineNextWaveTime: %.2f", m_flMannVsMachineNextWaveTime);
+
+	bool m_bMannVsMachineBetweenWaves = view_as<bool>(GetEntProp(entity, Prop_Data, "m_bMannVsMachineBetweenWaves"));
+	PrintToConsole(client, "m_bMannVsMachineBetweenWaves: %s", m_bMannVsMachineBetweenWaves ? "true" : "false");
+
+	PrintToConsole(client, "--------------------------------------------");
+	int size; char sValue[255];
+
+	size = GetEntPropArraySize(entity, Prop_Data, "m_nMannVsMachineWaveClassCounts");
+	PrintToConsole(client, "m_nMannVsMachineWaveClassCounts (size): %i", size);
+
+	for (int i = 0; i < size; i++)
+		PrintToConsole(client, "- %i: %i", i, GetEntProp(entity, Prop_Data, "m_nMannVsMachineWaveClassCounts", _, i));
+	
+	PrintToConsole(client, "--------------------------------------------");
+	size = GetEntPropArraySize(entity, Prop_Data, "m_iszMannVsMachineWaveClassNames");
+	PrintToConsole(client, "m_iszMannVsMachineWaveClassNames (size): %i", size);
+
+	for (int i = 0; i < size; i++)
+	{
+		GetEntPropString(entity, Prop_Data, "m_iszMannVsMachineWaveClassNames", sValue, sizeof(sValue), i);
+		PrintToConsole(client, "- %i: %s", i, sValue);
+	}
+
+	PrintToConsole(client, "--------------------------------------------");
+	size = GetEntPropArraySize(entity, Prop_Data, "m_nMannVsMachineWaveClassFlags");
+	PrintToConsole(client, "m_nMannVsMachineWaveClassFlags (size): %i", size);
+
+	for (int i = 0; i < size; i++)
+		PrintToConsole(client, "- %i: %i", i, GetEntProp(entity, Prop_Data, "m_nMannVsMachineWaveClassFlags", _, i));
+
+	PrintToConsole(client, "--------------------------------------------");
+	size = GetEntPropArraySize(entity, Prop_Data, "m_nMannVsMachineWaveClassCounts2");
+	PrintToConsole(client, "m_nMannVsMachineWaveClassCounts2 (size): %i", size);
+
+	for (int i = 0; i < size; i++)
+		PrintToConsole(client, "- %i: %i", i, GetEntProp(entity, Prop_Data, "m_nMannVsMachineWaveClassCounts2", _, i));
+
+	PrintToConsole(client, "--------------------------------------------");
+	size = GetEntPropArraySize(entity, Prop_Data, "m_iszMannVsMachineWaveClassNames2");
+	PrintToConsole(client, "m_iszMannVsMachineWaveClassNames2 (size): %i", size);
+
+	for (int i = 0; i < size; i++)
+	{
+		GetEntPropString(entity, Prop_Data, "m_iszMannVsMachineWaveClassNames2", sValue, sizeof(sValue), i);
+		PrintToConsole(client, "- %i: %s", i, sValue);
+	}
+
+	PrintToConsole(client, "--------------------------------------------");
+	size = GetEntPropArraySize(entity, Prop_Data, "m_nMannVsMachineWaveClassFlags2");
+	PrintToConsole(client, "m_nMannVsMachineWaveClassFlags2 (size): %i", size);
+
+	for (int i = 0; i < size; i++)
+		PrintToConsole(client, "- %i: %i", i, GetEntProp(entity, Prop_Data, "m_nMannVsMachineWaveClassFlags2", _, i));
+
+	PrintToConsole(client, "--------------------------------------------");
+	size = GetEntPropArraySize(entity, Prop_Data, "m_bMannVsMachineWaveClassActive");
+	PrintToConsole(client, "m_bMannVsMachineWaveClassActive (size): %i", size);
+
+	for (int i = 0; i < size; i++)
+		PrintToConsole(client, "- %i: %i", i, GetEntProp(entity, Prop_Data, "m_bMannVsMachineWaveClassActive", _, i));
+
+	PrintToConsole(client, "--------------------------------------------");
+	size = GetEntPropArraySize(entity, Prop_Data, "m_bMannVsMachineWaveClassActive2");
+	PrintToConsole(client, "m_bMannVsMachineWaveClassActive2 (size): %i", size);
+
+	for (int i = 0; i < size; i++)
+		PrintToConsole(client, "- %i: %i", i, GetEntProp(entity, Prop_Data, "m_bMannVsMachineWaveClassActive2", _, i));
+	
+	return Plugin_Handled;
+}
+
+/*
+CTFObjectiveResource - tf_objective_resource
+- m_nMannVsMachineMaxWaveCount (Offset 3996) (Save)(4 Bytes)
+- m_nMannVsMachineWaveCount (Offset 4000) (Save)(4 Bytes)
+- m_nMannVsMachineWaveEnemyCount (Offset 4004) (Save)(4 Bytes)
+- m_nMvMWorldMoney (Offset 4008) (Save)(4 Bytes)
+- m_flMannVsMachineNextWaveTime (Offset 4012) (Save)(4 Bytes)
+- m_bMannVsMachineBetweenWaves (Offset 4016) (Save)(1 Bytes)
+- m_nMannVsMachineWaveClassCounts (Offset 4020) (Save)(48 Bytes)
+- m_iszMannVsMachineWaveClassNames (Offset 4116) (Save)(48 Bytes)
+- m_nMannVsMachineWaveClassFlags (Offset 4212) (Save)(48 Bytes)
+- m_nMannVsMachineWaveClassCounts2 (Offset 4068) (Save)(48 Bytes)
+- m_iszMannVsMachineWaveClassNames2 (Offset 4164) (Save)(48 Bytes)
+- m_nMannVsMachineWaveClassFlags2 (Offset 4260) (Save)(48 Bytes)
+- m_bMannVsMachineWaveClassActive (Offset 4308) (Save)(12 Bytes)
+- m_bMannVsMachineWaveClassActive2 (Offset 4320) (Save)(12 Bytes)
+*/
+
+stock int GetMaxWaveCount()
+{
+	int entity = -1;
+	while ((entity = FindEntityByClassname(entity, "tf_objective_resource")) != -1)
+		break;
+	
+	return GetEntProp(entity, Prop_Data, "m_nMannVsMachineMaxWaveCount");
+}
+
+stock int GetWaveCount()
+{
+	int entity = -1;
+	while ((entity = FindEntityByClassname(entity, "tf_objective_resource")) != -1)
+		break;
+	
+	return GetEntProp(entity, Prop_Data, "m_nMannVsMachineWaveCount");
+}
+
+stock int GetWaveEnemyCount()
+{
+	int entity = -1;
+	while ((entity = FindEntityByClassname(entity, "tf_objective_resource")) != -1)
+		break;
+	
+	return GetEntProp(entity, Prop_Data, "m_nMannVsMachineWaveEnemyCount");
+}
+
+stock int GetWorldMoneyCount()
+{
+	int entity = -1;
+	while ((entity = FindEntityByClassname(entity, "tf_objective_resource")) != -1)
+		break;
+	
+	return GetEntProp(entity, Prop_Data, "m_nMvMWorldMoney");
+}
+
+stock float GetNextWaveTime()
+{
+	int entity = -1;
+	while ((entity = FindEntityByClassname(entity, "tf_objective_resource")) != -1)
+		break;
+	
+	return GetEntPropFloat(entity, Prop_Data, "m_flMannVsMachineNextWaveTime");
+}
+
+stock bool IsBetweenWaves()
+{
+	int entity = -1;
+	while ((entity = FindEntityByClassname(entity, "tf_objective_resource")) != -1)
+		break;
+	
+	return view_as<bool>(GetEntProp(entity, Prop_Data, "m_bMannVsMachineBetweenWaves"));
 }
